@@ -51,7 +51,7 @@ Each of these happens once, in `books-batch2.csv`:
 | Problem | Book | Stored value | What's wrong | Probable cause |
 |---|---|---|---|---|
 | Hyphens | 10002 *Salt and Ember* | `0-450-19827-8` | Hyphens aren't part of the value. Without them it's valid: `0450198278`. | Copied in the printed style, like on a book's copyright page |
-| Spaces | 10003 *A Field Guide to Quiet Places* | `␣162 001 4750␣` | Spaces at the start, end and inside. Without them it's `1620014750`, which is valid apart from the missing leading zero. | Hand-typed or pasted |
+| Spaces | 10003 *A Field Guide to Quiet Places* | `␣162 001 4750␣` | Spaces at the start, end and inside. Without them it's `1620014750`, which is valid. | Hand-typed or pasted |
 | Lowercase `x` | 10004 *Winter Orchard* | `031200009x` | The check character must be an uppercase `X`. With `X` it's valid. | Hand-typed |
 | Letter in the middle | 10008 *The Glass Aviary* | `04390A3483` | Only the last character may be a letter. This is *The Hunger Games*' ISBN `0439023483` with the `2` replaced by `A`. | Typo, or a value made up for this test data |
 | Too long | 10009 *Borrowed Light* | `15287463097` | 11 digits. It's book 10001's ISBN `1528746309` with an extra `7`. | Typo, or a value made up for this test data |
@@ -69,15 +69,16 @@ Each of these happens once, in `books-batch2.csv`:
 
 - **Rows:** `books.csv` 9,382, which is every `978`/`979` value in the file. The non-ISBN codes in problems 7 and 8 were converted the same way. `books-batch2.csv` 14 (all rows copied from `books.csv`, plus book 10012).
 - **Example:** book 1, *The Hunger Games*, stores `9.78043902348e+12`. The real ISBN-13 is `9780439023481`, but this value equals `9780439023480`. The final `1` was rounded off. Book 11, *The Kite Runner*, stores `9.78159448e+12`; this is also rounded to 12 digits, and the trailing zeros just aren't shown.
-- **What's wrong:** The value is a decimal number rounded to 12 significant digits, so the 13th digit, the check digit, is gone. Rounding can also change the 12th digit.
+- **What's wrong:** The value is a decimal number rounded to 12 significant digits, so the 13th digit, the check digit, is gone. Rounding can also change the 12th digit. A number exactly halfway goes to the even ten: `…25` became `…20` and `…35` became `…40`. That's true for all 949 such rows where the ISBN-10 shows the real number.
 - **Probable cause:** Empty cells in the column made it be read as decimal numbers instead of text or integers. The file was then saved with 12-digit precision. Python 2's float-to-text conversion did exactly this, and so does Excel with large numbers.
 - **What can be recovered**, in `books.csv`:
 
   | Situation | Rows |
   |---|---:|
   | A usable ISBN-10 in the same row produces exactly this rounded value | 9,238 |
-  | No usable ISBN-10, but only one checksum-valid ISBN-13 rounds to this value | 56 |
-  | No usable ISBN-10, and two checksum-valid ISBN-13s fit, so it can't be resolved | 75 |
+  | No usable ISBN-10, but only one checksum-valid ISBN-13 rounds to this value | 45 |
+  | No usable ISBN-10, and two checksum-valid ISBN-13s fit, so it can't be resolved | 84 |
+  | No usable ISBN-10, and no checksum-valid ISBN-13 rounds to this value | 2 |
   | A usable ISBN-10 exists but points to a different ISBN-13 (see problem 6) | 13 |
   | **Total** | **9,382** |
 
@@ -159,12 +160,12 @@ These go beyond single values:
 | 134 | City of Glass | `1416914307` | ✅ | `9.7814169143e+12` | ⚠️ scientific notation; recoverable |
 | 1 | The Hunger Games | `439023483` | 🔧 missing 1 leading zero | `9.78043902348e+12` | ⚠️ scientific notation; recoverable |
 | 10002 | Salt and Ember | `0-450-19827-8` | 🔧 hyphens | `9780450198274` | ✅ matches |
-| 10003 | A Field Guide to Quiet Places | `␣162 001 4750␣` | 🔧 spaces, and missing 1 leading zero | `9781620014752` | ✅ matches |
+| 10003 | A Field Guide to Quiet Places | `␣162 001 4750␣` | 🔧 spaces | `9781620014752` | ✅ matches |
 | 4 | To Kill a Mockingbird | `61120081` | 🔧 missing 2 leading zeros | `9.78006112008e+12` | ⚠️ scientific notation; recoverable |
 
 ## What this means for fixing (later)
 
 - **Read both columns as text.** If they're loaded as numbers, the leading zeros and the rounded ISBN-13s will be damaged again.
-- **Rebuild ISBN-13s from the ISBN-10s.** The stored ISBN-13s can't be trusted, but 9,238 rows can be rebuilt from their ISBN-10. Another 56 can be recovered by testing which checksum-valid ISBN-13 rounds to the stored value. The other 75 rounded values can't be resolved from this data alone.
+- **Rebuild ISBN-13s from the ISBN-10s.** The stored ISBN-13s can't be trusted, but 9,238 rows can be rebuilt from their ISBN-10. Another 45 can be recovered by testing which checksum-valid ISBN-13 rounds to the stored value. The other 86 rounded values can't be resolved from this data alone.
 - **Decide what to do with conflicts and non-ISBN codes.** The 14 rows where the two columns disagree, and the 31 non-ISBN codes (Barnes & Noble IDs, store barcodes, UPCs), need a decision: leave them empty, keep them in a separate "other ID" column, or look them up.
 - **Don't trust checksums alone.** A checksum doesn't catch an ISBN that belongs to another book (*Paper Moons*) or a duplicate row.

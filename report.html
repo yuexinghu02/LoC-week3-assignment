@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ingestion Report</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6677; --line: #dfe3ea;
+    --accent: #2f5bd3; --ok: #1f7a4d; --ok-bg: #e5f4ec; --warn: #8a5a00; --warn-bg: #fdf1d8;
+    --bad: #b3261e; --bad-bg: #fbe4e2; --chip: #eef1f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --panel: #1c2027; --text: #e6e9ef; --muted: #9aa3b2; --line: #2e343e;
+      --accent: #7ea2ff; --ok: #6fd3a0; --ok-bg: #173327; --warn: #f0c46a; --warn-bg: #3a2f17;
+      --bad: #ff8a80; --bad-bg: #3d1f1d; --chip: #262b34;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 0; }
+  h3 { font-size: 15px; margin: 20px 0 8px; }
+  .muted { color: var(--muted); }
+  .picker { margin: 20px 0; padding: 20px; border: 2px dashed var(--line); border-radius: 10px;
+            background: var(--panel); text-align: center; }
+  .picker.drag { border-color: var(--accent); }
+  button, .button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
+                    background: var(--panel); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .error { color: var(--bad); margin-top: 10px; }
+  nav.index { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 20px; }
+  nav.index a { text-decoration: none; color: var(--text); background: var(--chip);
+                padding: 4px 10px; border-radius: 999px; font-size: 13px; }
+  section.run { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+                padding: 18px 20px; margin: 0 0 20px; }
+  .run-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; }
+  .chip { font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; }
+  .chip.loaded { color: var(--ok); background: var(--ok-bg); }
+  .chip.loaded_with_warnings { color: var(--warn); background: var(--warn-bg); }
+  .chip.failed { color: var(--bad); background: var(--bad-bg); }
+  .headline { font-size: 17px; font-weight: 600; margin: 10px 0 2px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.total td { font-weight: 700; border-top: 2px solid var(--line); }
+  .scroll { overflow-x: auto; }
+  details { margin: 10px 0; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; }
+  details > summary { cursor: pointer; padding: 10px 0; font-weight: 600; }
+  details[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  .count { color: var(--muted); font-weight: 400; }
+  .up { color: var(--bad); }
+  .small { font-size: 12px; white-space: nowrap; }
+  code { font-size: 12.5px; word-break: break-all; }
+  .actions { margin-top: 14px; }
+  @media (max-width: 600px) { section.run { padding: 14px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Ingestion report</h1>
+  <p class="muted">Shows every run in <code>ingestion-log.json</code>, newest first. Nothing is uploaded; the file is read only in this page.</p>
+
+  <div class="picker" id="picker">
+    <button class="primary" id="open">Open ingestion-log.json</button>
+    <input type="file" id="file" accept=".json,application/json" hidden>
+    <p class="muted">…or drag the file onto this page.</p>
+    <div class="error" id="error" role="alert"></div>
+  </div>
+
+  <nav class="index" id="index"></nav>
+  <div id="runs"></div>
+</main>
+
+<script>
+"use strict";
+
+const GROUPS = [
+  ["needs_decision", "Needs a decision"],
+  ["needs_lookup", "Needs a lookup"],
+  ["check_this", "Check this"],
+];
+const STATUSES = ["ok", "repaired", "inferred", "rejected", "empty"];
+const LABELS = { loaded: "Loaded", loaded_with_warnings: "Loaded with warnings", failed: "Failed" };
+
+// Build elements with text only, so nothing from the log is ever treated as HTML.
+function el(tag, attrs, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const child of children.flat()) {
+    if (child === null || child === undefined || child === false) continue;
+    node.append(child instanceof Node ? child : String(child));
+  }
+  return node;
+}
+
+const fmt = n => (typeof n === "number" ? n.toLocaleString() : n ?? "—");
+const when = iso => (iso ? new Date(iso).toLocaleString() : "—");
+const show = v => (v === null || v === undefined || v === "" ? "(empty)" : String(v));
+
+function table(headers, rows, numeric = []) {
+  return el("div", { class: "scroll" }, el("table", {},
+    el("thead", {}, el("tr", {}, headers.map((h, i) => el("th", { class: numeric.includes(i) ? "num" : "" }, h)))),
+    el("tbody", {}, rows.map(r => el("tr", { class: r.className || "" },
+      r.cells.map((c, i) => el("td", { class: numeric.includes(i) ? "num" : "" }, c)))))));
+}
+
+const plural = (n, one, many) => `${fmt(n)} ${n === 1 ? one : many}`;
+
+function headline(run) {
+  if (run.status === "failed") return `Failed: ${run.failure_reason}`;
+  const c = run.counts;
+  const parts = [plural(c.rows_read, "row", "rows"), plural(c.loaded, "new book", "new books"),
+                 `${fmt(c.updated)} updated`];
+  if (c.rejected) parts.push(`${plural(c.rejected, "row", "rows")} not loaded`);
+  if (run.needs_decision.length) parts.push(`${fmt(run.needs_decision.length)} need a decision`);
+  if (run.needs_lookup.length) parts.push(`${plural(run.needs_lookup.length, "ISBN needs", "ISBNs need")} a lookup`);
+  if (run.check_this.length) parts.push(`${fmt(run.check_this.length)} to check`);
+  return `${LABELS[run.status]}: ${parts.join(", ")}.` + (run.adds_up ? "" : " The counts don't add up!");
+}
+
+function countsTable(run) {
+  const c = run.counts;
+  const total = c.loaded + c.updated + c.skipped_already_exist + c.rejected;
+  return table(["", "Rows"], [
+    { cells: ["Rows in the file", fmt(c.rows_read)] },
+    { cells: ["Loaded (new books)", fmt(c.loaded)] },
+    { cells: ["Updated", fmt(c.updated)] },
+    { cells: ["Skipped, already exist", fmt(c.skipped_already_exist)] },
+    { cells: ["Rejected (not loaded)", fmt(c.rejected)] },
+    { className: "total", cells: [run.adds_up ? "Total ✓ adds up" : "Total ✗ doesn't add up", fmt(total)] },
+  ], [1]);
+}
+
+// Files differ in size, so statuses are compared as a share of each file's rows.
+// Only a rise in rejected or inferred values is a warning sign (Rule 13).
+function statusTable(run, previous) {
+  const share = (counts, s) => {
+    const total = STATUSES.reduce((sum, k) => sum + (counts[k] || 0), 0);
+    return total ? (100 * (counts[s] || 0)) / total : 0;
+  };
+  const rows = [];
+  for (const col of ["isbn", "isbn13"]) {
+    const now = run.isbn_status_counts[col];
+    const before = previous ? previous.isbn_status_counts[col] : null;
+    rows.push({ cells: [
+      col,
+      ...STATUSES.map(s => {
+        const pct = share(now, s);
+        const detail = el("div", { class: "small muted" }, `${pct.toFixed(1)}%`);
+        const cell = el("div", {}, el("div", {}, fmt(now[s])), detail);
+        if (!before) return cell;
+        const diff = pct - share(before, s);
+        if (Math.abs(diff) < 0.1) return cell;
+        const worse = diff > 0 && (s === "rejected" || s === "inferred");
+        detail.append(" ", el("span", { class: worse ? "up" : "" }, `${diff > 0 ? "+" : ""}${diff.toFixed(1)}`));
+        return cell;
+      }),
+    ] });
+  }
+  return el("div", {},
+    table(["Column", ...STATUSES], rows, [1, 2, 3, 4, 5]),
+    el("p", { class: "muted" }, previous
+      ? `Under each count: its share of this file's rows, then the change in percentage points since ` +
+        `run ${previous.run} (${previous.file.given}). A rise in rejected or inferred is red.`
+      : "Under each count: its share of this file's rows. There's no earlier run to compare with."));
+}
+
+function warningList(items, open) {
+  return el("details", open ? { open: "" } : {},
+    el("summary", {}, ...items.title, " ", el("span", { class: "count" }, `(${fmt(items.rows.length)})`)),
+    items.rows.length ? table(items.headers, items.rows) : el("p", { class: "muted" }, "Nothing here."));
+}
+
+function problemCsv(run) {
+  const lines = [["group", "line", "book_id", "title", "column", "original_value", "reason", "suggested_action"]];
+  for (const r of run.rejected_rows || []) {
+    lines.push(["row not loaded", r.line, r.book_id, r.title, "", "", r.reason, "fix the row in the file and load it again"]);
+  }
+  for (const [key, label] of GROUPS) {
+    for (const w of run[key] || []) lines.push([label, w.line, w.book_id, w.title, w.column, w.value, w.reason, w.action]);
+  }
+  const quote = v => {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return lines.map(l => l.map(quote).join(",")).join("\r\n") + "\r\n";
+}
+
+function download(run) {
+  const blob = new Blob(["﻿" + problemCsv(run)], { type: "text/csv;charset=utf-8" });
+  const a = el("a", { href: URL.createObjectURL(blob), download: `run-${run.run}-problems.csv` });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function renderRun(run, previous) {
+  const fileInfo = el("p", { class: "muted" },
+    `${when(run.started_at)} · `, el("code", {}, run.file.given),
+    run.file.size_bytes != null ? ` · ${fmt(run.file.size_bytes)} bytes` : "");
+  const section = el("section", { class: "run", id: `run-${run.run}` },
+    el("div", { class: "run-head" },
+      el("h2", {}, `Run ${run.run}`),
+      el("span", { class: `chip ${run.status}` }, LABELS[run.status] || run.status)),
+    fileInfo,
+    el("p", { class: "headline" }, headline(run)));
+
+  if (run.status === "failed") return section;
+
+  section.append(el("div", { class: "grid" },
+    el("div", {}, el("h3", {}, "Does every row add up?"), countsTable(run),
+      el("p", { class: "muted" }, `Books in the database: ${fmt(run.books_before)} → ${fmt(run.books_after)}`)),
+    el("div", {}, el("h3", {}, "ISBN statuses in this file"), statusTable(run, previous))));
+
+  section.append(el("h3", {}, "What to do"));
+  const warningHeaders = ["Line", "book_id", "Title", "Column", "Value", "Reason", "What to do"];
+  const warningRow = w => ({ cells: [show(w.line), show(w.book_id), show(w.title), w.column,
+                                     el("code", {}, show(w.value)), w.reason, w.action] });
+  GROUPS.forEach(([key, label], i) => {
+    section.append(warningList({ title: [label], headers: warningHeaders, rows: run[key].map(warningRow) }, i < 2));
+  });
+
+  const auto = Object.entries(run.handled_automatically || {});
+  section.append(warningList({
+    title: ["Handled automatically, nothing to do"], headers: ["What was done", "Count"],
+    rows: auto.map(([what, n]) => ({ cells: [what, fmt(n)] })),
+  }, false));
+
+  section.append(warningList({
+    title: ["Rows not loaded"], headers: ["Line", "book_id", "Title", "Reason"],
+    rows: run.rejected_rows.map(r => ({ cells: [show(r.line), show(r.book_id), show(r.title), r.reason] })),
+  }, run.rejected_rows.length > 0));
+
+  section.append(warningList({
+    title: ["What changed"], headers: ["Line", "book_id", "Title", "Column", "Before", "After", "Why"],
+    rows: run.changes.map(c => ({ cells: [show(c.line), show(c.book_id), show(c.title), c.column,
+                                          show(c.old), show(c.new), c.reason] })),
+  }, false));
+
+  const extras = el("details", {}, el("summary", {}, "Assumptions and file details"),
+    el("ul", {}, (run.assumptions || []).map(a => el("li", {}, a))),
+    table(["", ""], [
+      { cells: ["Started", when(run.started_at)] },
+      { cells: ["Finished", when(run.finished_at)] },
+      { cells: ["File as typed", el("code", {}, run.file.given)] },
+      { cells: ["Full path", el("code", {}, run.file.path)] },
+      { cells: ["Size", `${fmt(run.file.size_bytes)} bytes`] },
+      { cells: ["SHA-256", el("code", {}, run.file.sha256)] },
+      { cells: ["Ignored extra columns", (run.ignored_columns || []).join(", ") || "none"] },
+    ]),
+    el("p", { class: "muted" }, "Loading the same file again is safe: it won't create duplicates."));
+  section.append(extras);
+
+  section.append(el("div", { class: "actions" },
+    el("button", { onclick: () => download(run) }, "Download problem list as CSV")));
+  return section;
+}
+
+function render(log) {
+  const runs = document.getElementById("runs");
+  const index = document.getElementById("index");
+  runs.replaceChildren();
+  index.replaceChildren();
+  const ordered = log.slice().sort((a, b) => b.run - a.run);
+  if (!ordered.length) {
+    runs.append(el("p", { class: "muted" }, "The log has no runs yet."));
+    return;
+  }
+  ordered.forEach((run, i) => {
+    // "Previous" is the latest earlier run that loaded something (Rule 13).
+    const previous = ordered.slice(i + 1).find(r => r.status !== "failed") || null;
+    runs.append(renderRun(run, previous));
+    index.append(el("a", { href: `#run-${run.run}` }, `Run ${run.run} · ${LABELS[run.status] || run.status}`));
+  });
+}
+
+function load(file) {
+  const error = document.getElementById("error");
+  error.textContent = "";
+  file.text().then(text => {
+    const log = JSON.parse(text);
+    if (!Array.isArray(log)) throw new Error("this file isn't a JSON array of runs");
+    render(log);
+  }).catch(e => { error.textContent = `Couldn't open ${file.name}: ${e.message}`; });
+}
+
+const input = document.getElementById("file");
+document.getElementById("open").addEventListener("click", () => input.click());
+input.addEventListener("change", () => { if (input.files[0]) load(input.files[0]); input.value = ""; });
+
+const picker = document.getElementById("picker");
+document.addEventListener("dragover", e => { e.preventDefault(); picker.classList.add("drag"); });
+document.addEventListener("dragleave", e => { if (!e.relatedTarget) picker.classList.remove("drag"); });
+document.addEventListener("drop", e => {
+  e.preventDefault();
+  picker.classList.remove("drag");
+  if (e.dataTransfer.files[0]) load(e.dataTransfer.files[0]);
+});
+</script>
+</body>
+</html>
